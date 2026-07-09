@@ -1,0 +1,10 @@
+Brotli==1.1.0
+discord.py
+emoji==2.14.1
+gspread
+matplotlib==3.11.0
+pandas==3.0.3
+Pillow==12.3.0
+protobuf==7.35.1
+python-dotenv==1.2.2
+Requests==2.34.2
