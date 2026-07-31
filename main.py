@@ -31,14 +31,19 @@ async def on_ready():
         print("[LOAD] start loading cogs")
 
         for f in os.listdir(dir_path + "/Cogs"):
-            if f.endswith(".py"):
-                ext_name = "Cogs." + f[:-3]
-                try:
-                    await bot.load_extension(ext_name)
-                    print(f"[OK] loaded: {ext_name}")
-                except Exception as e:
-                    print(f"[NG] failed: {ext_name}")
-                    print(f"     reason: {type(e).__name__}: {e}")
+            if not f.endswith(".py"):
+                continue
+            if f == "__init__.py" or f.endswith("_views.py") or f.endswith("_state.py"):
+                continue
+
+            ext_name = "Cogs." + f[:-3]
+            try:
+                await bot.load_extension(ext_name)
+                print(f"[OK] loaded: {ext_name}")
+            except Exception as e:
+                print(f"[NG] failed: {ext_name}")
+                print(f"     reason: {type(e).__name__}: {e}")
+
 
         print("[LOAD] loaded cogs:", list(bot.cogs.keys()))
         print("[TREE] local commands before sync:", [cmd.name for cmd in bot.tree.get_commands()])

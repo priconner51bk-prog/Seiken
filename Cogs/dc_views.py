@@ -1,22 +1,98 @@
 import asyncio
 import math
+import random
 from datetime import datetime
 
 import discord
+from discord.errors import HTTPException
 
-from util.database import db
 from util.content_generator import Generator
-from util.spreadsheetdc import SpreadSheetDC
+from util.database import db
 from util.mochi_helper import MochiTableHelper
+from util.spreadsheetdc import SpreadSheetDC
 
-from .dc_state import (
-    table_reaction,
-    dc_reprint,
-    prev_name,
-    prev_message,
-    prev_mochi,
-    finish_members,
-)
+from .dc_state import (dc_reprint, finish_members, prev_message, prev_mochi,
+                       prev_name, table_reaction)
+
+
+class DiscordRateLimitRetry:
+    def __init__(
+        self,
+        *,
+        max_retries: int = 5,
+        base_delay: float = 0.8,
+        max_delay: float = 8.0,
+        jitter: float = 0.3,
+    ):
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.jitter = jitter
+
+    async def run(self, coro_factory):
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await coro_factory()
+            except HTTPException as exc:
+                last_error = exc
+                if exc.status != 429 or attempt >= self.max_retries:
+                    raise
+
+                retry_after = getattr(exc, "retry_after", None)
+                if retry_after is None and getattr(exc, "response", None) is not None:
+                    header = exc.response.headers.get("Retry-After")
+                    if header is not None:
+                        try:
+                            retry_after = float(header)
+                        except (TypeError, ValueError):
+                            retry_after = None
+
+                backoff = min(self.base_delay * (2**attempt), self.max_delay)
+                wait_time = max(retry_after or 0, backoff) + random.uniform(
+                    0, self.jitter
+                )
+                await asyncio.sleep(wait_time)
+
+        if last_error is not None:
+            raise last_error
+
+
+_discord_retry = DiscordRateLimitRetry()
+
+
+async def safe_discord_call(coro_factory):
+    return await _discord_retry.run(coro_factory)
+
+
+async def safe_message_edit(message, **kwargs):
+    return await safe_discord_call(lambda: message.edit(**kwargs))
+
+
+async def safe_message_delete(message, **kwargs):
+    return await safe_discord_call(lambda: message.delete(**kwargs))
+
+
+async def safe_followup_send(interaction: discord.Interaction, *args, **kwargs):
+    return await safe_discord_call(lambda: interaction.followup.send(*args, **kwargs))
+
+
+async def safe_channel_send(channel, *args, **kwargs):
+    return await safe_discord_call(lambda: channel.send(*args, **kwargs))
+
+
+async def safe_response_send_message(interaction: discord.Interaction, *args, **kwargs):
+    return await safe_discord_call(
+        lambda: interaction.response.send_message(*args, **kwargs)
+    )
+
+
+async def safe_edit_original_response(interaction: discord.Interaction, **kwargs):
+    return await safe_discord_call(lambda: interaction.edit_original_response(**kwargs))
+
+
+async def safe_delete_original_response(interaction: discord.Interaction):
+    return await safe_discord_call(lambda: interaction.delete_original_response())
 
 
 class DCCompleteView(discord.ui.View):
@@ -41,6 +117,7 @@ class DCCompleteView(discord.ui.View):
 
     @discord.ui.button(label="戻す", style=discord.ButtonStyle.primary)
     async def return_button(self, interaction: discord.Interaction, button):
+        await interaction.response.defer(ephemeral=True)
         try:
             for member in self.members:
                 values = ",".join([f"'{v}'" if v != None else "NULL" for v in member])
@@ -48,11 +125,14 @@ class DCCompleteView(discord.ui.View):
                     (No,id,boss,status,damage,text,done) \
                     VALUES ({values})")
             content = self.content
-            await interaction.channel.get_partial_message(
-                interaction.message.reference.message_id
-            ).edit(content=content)
+            await safe_message_edit(
+                interaction.channel.get_partial_message(
+                    interaction.message.reference.message_id
+                ),
+                content=content,
+            )
             if self.log != None:
-                await self.log.delete()
+                await safe_message_delete(self.log)
             global dc_reprint
             dc_reprint[interaction.guild_id][self.boss - 1] = self.prev_stat[
                 "dc_reprint"
@@ -73,10 +153,10 @@ class DCCompleteView(discord.ui.View):
             prev_name.return_button(interaction.guild_id, self.prev_stat["prev_name"])
         except:
             pass
-        await interaction.response.send_message(
-            "戻しました", ephemeral=True, delete_after=15
+        await safe_followup_send(
+            interaction, "戻しました", ephemeral=True, delete_after=15
         )
-        await interaction.message.delete()
+        await safe_message_delete(interaction.message)
 
 
 class SuspendView(discord.ui.View):
@@ -90,7 +170,7 @@ class SuspendView(discord.ui.View):
     )
     async def resume_sengen_button(self, interaction: discord.Interaction, button):
         db.delete_guild(interaction.guild_id, "suspend_sengen")
-        await interaction.message.delete()
+        await safe_message_delete(interaction.message)
 
 
 class DCBossRenameModal(discord.ui.Modal, title="ボス名変更"):
@@ -110,6 +190,7 @@ class DCBossRenameModal(discord.ui.Modal, title="ボス名変更"):
         super().__init__(timeout=240, custom_id="dc_modal")
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         res = ""
         changed = self.names
         boss = [self.b1, self.b2, self.b3, self.b4, self.b5]
@@ -120,8 +201,8 @@ class DCBossRenameModal(discord.ui.Modal, title="ボス名変更"):
                 changed[i] = boss[i].value
                 changenum.append(i)
         if res == "":
-            await interaction.response.send_message(
-                content="名前の変更はありません", view=None, ephemeral=True
+            await safe_followup_send(
+                interaction, content="名前の変更はありません", ephemeral=True
             )
         else:
             db.write_guild(interaction.guild_id, "dc_name", "\n".join(changed))
@@ -132,10 +213,8 @@ class DCBossRenameModal(discord.ui.Modal, title="ボス名変更"):
                 ).get_partial_message(
                     int(db.read_guild("dc_msg", interaction.guild_id).split("\n")[i])
                 )
-                await message.edit(content=content)
-            await interaction.response.send_message(
-                content=res, view=None, ephemeral=True
-            )
+                await safe_message_edit(message, content=content)
+            await safe_followup_send(interaction, content=res, ephemeral=True)
 
 
 class DCManageView(discord.ui.View):
@@ -254,19 +333,23 @@ class DCReprintDCMessageView(discord.ui.View):
         return False
 
     async def on_error(self, interaction: discord.Interaction, error, item):
-        await interaction.response.send_message("転送に失敗しました", ephemeral=True)
+        await safe_response_send_message(
+            interaction, "転送に失敗しました", ephemeral=True
+        )
 
     @discord.ui.button(
         label="メイン転送", style=discord.ButtonStyle.gray, custom_id="main_reprint"
     )
     async def main_button(self, interaction: discord.Interaction, button):
+        await interaction.response.defer(ephemeral=True)
         if interaction.guild_id == 1276184060791750656:
             channel = interaction.guild.get_channel(1293579100056846409)
         else:
             channel = interaction.guild.get_channel(1524979826761535498)
         dc_messages = db.read_guild("dc_msg", interaction.guild_id).split("\n")
         boss_num = dc_messages.index(str(interaction.message.id)) + 1
-        await interaction.response.send_message(
+        await safe_followup_send(
+            interaction,
             content=f"{channel.mention}に転送しますか",
             ephemeral=True,
             view=DCReprintDCMessageConfirmView(channel, boss_num),
@@ -276,13 +359,15 @@ class DCReprintDCMessageView(discord.ui.View):
         label="サブ転送", style=discord.ButtonStyle.gray, custom_id="sub_reprint"
     )
     async def sub_button(self, interaction: discord.Interaction, button):
+        await interaction.response.defer(ephemeral=True)
         if interaction.guild_id == 1276184060791750656:
             channel = interaction.guild.get_channel(1335059739410698344)
         else:
             channel = interaction.guild.get_channel(864795442742427648)
         dc_messages = db.read_guild("dc_msg", interaction.guild_id).split("\n")
         boss_num = dc_messages.index(str(interaction.message.id)) + 1
-        await interaction.response.send_message(
+        await safe_followup_send(
+            interaction,
             content=f"{channel.mention}に転送しますか",
             ephemeral=True,
             view=DCReprintDCMessageConfirmView(channel, boss_num),
@@ -292,13 +377,15 @@ class DCReprintDCMessageView(discord.ui.View):
         label="単騎転送", style=discord.ButtonStyle.gray, custom_id="t_reprint"
     )
     async def t_button(self, interaction: discord.Interaction, button):
+        await interaction.response.defer(ephemeral=True)
         if interaction.guild_id == 1276184060791750656:
             channel = interaction.guild.get_channel(1293579743681319023)
         else:
             channel = interaction.guild.get_channel(1524979951928086539)
         dc_messages = db.read_guild("dc_msg", interaction.guild_id).split("\n")
         boss_num = dc_messages.index(str(interaction.message.id)) + 1
-        await interaction.response.send_message(
+        await safe_followup_send(
+            interaction,
             content=f"{channel.mention}に転送しますか",
             ephemeral=True,
             view=DCReprintDCMessageConfirmView(channel, boss_num),
@@ -332,19 +419,22 @@ class DCReprintDCMessageConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="")
         global dc_reprint
         content = Generator.dc_content(interaction.guild, self.boss_num)
-        send_message = await self.channel.send(
-            content=content, view=DCReprintView(self.boss_num), silent=True
+        send_message = await safe_channel_send(
+            self.channel,
+            content=content,
+            view=DCReprintView(self.boss_num),
+            silent=True,
         )
         if not interaction.guild_id in dc_reprint:
             dc_reprint[interaction.guild_id] = [None, None, None, None, None]
         dc_reprint[interaction.guild_id][self.boss_num - 1] = send_message
-        await interaction.delete_original_response()
+        await safe_delete_original_response(interaction)
         reprinttimer[self.boss_num - 1] = datetime.now()
 
     @discord.ui.button(label="取り消し", style=discord.ButtonStyle.red)
     async def cancel_button(self, interaction: discord.Interaction, button):
         await interaction.response.edit_message(content="")
-        await interaction.delete_original_response()
+        await safe_delete_original_response(interaction)
 
 
 class DCReprintView(discord.ui.View):
@@ -362,63 +452,69 @@ class DCReprintView(discord.ui.View):
             return True
         return False
 
-    @discord.ui.button(label="通し指示", style=discord.ButtonStyle.blurple)
-    async def through_button(self, interaction: discord.Interaction, button):
+    async def _send_members_select(
+        self,
+        interaction: discord.Interaction,
+        last_attack: bool,
+    ):
+        # インタラクション延命
+        await interaction.response.defer(ephemeral=True)
+
+        # 対象メンバー取得
         members = db.execute(
-            f"SELECT No,id FROM dc_{interaction.guild.id} WHERE boss = {self.boss_num} AND done = 0"
+            f"SELECT No,id FROM dc_{interaction.guild.id} "
+            f"WHERE boss = {self.boss_num} AND done = 0"
         )
         if len(members) > 0:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "通すメンバーを選択",
                 view=DCReprintMembersView(
-                    self.boss_num, interaction.guild, False, interaction.message
+                    self.boss_num,
+                    interaction.guild,
+                    last_attack,
+                    interaction.message,
                 ),
                 ephemeral=True,
             )
         else:
-            await interaction.response.send_message(
-                "メンバーがいません", ephemeral=True
+            await interaction.followup.send("メンバーがいません", ephemeral=True)
+
+    async def _send_cancel_select(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        members = db.execute(
+            f"SELECT No,id FROM dc_{interaction.guild.id} "
+            f"WHERE boss = {self.boss_num} AND done = 1"
+        )
+        if len(members) > 0:
+            await interaction.followup.send(
+                "キャンセルするメンバーを選択",
+                view=DCReprintCancelMembersView(
+                    self.boss_num,
+                    interaction.guild,
+                    interaction.message,
+                ),
+                ephemeral=True,
             )
+        else:
+            await interaction.followup.send("メンバーがいません", ephemeral=True)
+
+    @discord.ui.button(label="通し指示", style=discord.ButtonStyle.blurple)
+    async def through_button(self, interaction: discord.Interaction, button):
+        await self._send_members_select(interaction, last_attack=False)
 
     @discord.ui.button(label="〆指示", style=discord.ButtonStyle.blurple)
     async def finish_button(self, interaction: discord.Interaction, button):
-        members = db.execute(
-            f"SELECT No,id FROM dc_{interaction.guild.id} WHERE boss = {self.boss_num} AND done = 0"
-        )
-        if len(members) > 0:
-            await interaction.response.send_message(
-                "通すメンバーを選択",
-                view=DCReprintMembersView(
-                    self.boss_num, interaction.guild, True, interaction.message
-                ),
-                ephemeral=True,
-            )
-        else:
-            await interaction.response.send_message(
-                "メンバーがいません", ephemeral=True
-            )
+        await self._send_members_select(interaction, last_attack=True)
 
     @discord.ui.button(label="指示キャンセル", style=discord.ButtonStyle.red)
     async def cancel_button(self, interaction: discord.Interaction, button):
-        members = db.execute(
-            f"SELECT No,id FROM dc_{interaction.guild.id} WHERE boss = {self.boss_num} AND done = 1"
-        )
-        if len(members) > 0:
-            await interaction.response.send_message(
-                "キャンセルするメンバーを選択",
-                view=DCReprintCancelMembersView(
-                    self.boss_num, interaction.guild, interaction.message
-                ),
-                ephemeral=True,
-            )
-        else:
-            await interaction.response.send_message(
-                "メンバーがいません", ephemeral=True
-            )
+        await self._send_cancel_select(interaction)
 
     @discord.ui.button(label="連携終了", style=discord.ButtonStyle.gray)
     async def kaihou_button(self, interaction: discord.Interaction, button):
-        await interaction.response.send_message(
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(
             "連携を終了しますか？",
             view=KaihouConfirmView(self.boss_num),
             ephemeral=True,
@@ -426,8 +522,11 @@ class DCReprintView(discord.ui.View):
 
     @discord.ui.button(row=2, label="ダメージリスト", style=discord.ButtonStyle.green)
     async def damagelist_button(self, interaction: discord.Interaction, button):
-        await interaction.response.send_message(
-            "", view=DamageListView(interaction.guild, self.boss_num), ephemeral=True
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(
+            "",
+            view=DamageListView(interaction.guild, self.boss_num),
+            ephemeral=True,
         )
 
 
@@ -522,14 +621,17 @@ class DCReprintConfirmView(discord.ui.View):
         if self.last_attack:
             await interaction.response.defer(ephemeral=True)
         else:
-            send = await interaction.channel.send(
+            send = await safe_channel_send(
+                interaction.channel,
                 self.original_message.content,
                 view=DCReprintView(self.boss_num),
                 silent=True,
             )
             await interaction.response.defer(ephemeral=True)
             global dc_reprint
-            await dc_reprint[interaction.guild_id][self.boss_num - 1].delete()
+            await safe_message_delete(
+                dc_reprint[interaction.guild_id][self.boss_num - 1]
+            )
             dc_reprint[interaction.guild_id][self.boss_num - 1] = send
             self.original_message = send
 
@@ -538,7 +640,7 @@ class DCReprintConfirmView(discord.ui.View):
             res += (
                 interaction.guild.get_member(self.members[int(idx)][1]).mention + "\n"
             )
-        send = await interaction.channel.send(content=res)
+        send = await safe_channel_send(interaction.channel, content=res)
         members_list = []
         name_update = []
 
@@ -666,8 +768,11 @@ class DCReprintConfirmView(discord.ui.View):
         ).get_partial_message(
             db.read_guild("dc_msg", interaction.guild_id).split("\n")[self.boss_num - 1]
         )
-        await dc_message.edit(content=content)
-        await dc_reprint[interaction.guild_id][self.boss_num - 1].edit(content=content)
+        await safe_message_edit(dc_message, content=content)
+        await safe_message_edit(
+            dc_reprint[interaction.guild_id][self.boss_num - 1], content=content
+        )
+        from .dc import DC
         await DC.table_change(interaction.guild, self.boss_num, members_list, True)
         prev_message.add(
             interaction.guild_id,
@@ -678,14 +783,15 @@ class DCReprintConfirmView(discord.ui.View):
         )
         if self.last_attack:
             if len(members_list) > 0:
-                await interaction.edit_original_response(
+                await safe_edit_original_response(
+                    interaction,
                     content="持ち越しを選択",
                     view=DCMochiSelectView(interaction.guild_id, members_list[0]),
                 )
             else:
-                await interaction.delete_original_response()
+                await safe_delete_original_response(interaction)
         else:
-            await interaction.delete_original_response()
+            await safe_delete_original_response(interaction)
         # 名前を更新
         for m in name_update:
             global prev_name
@@ -763,17 +869,18 @@ class DCReprintCancelConfirmView(discord.ui.View):
             return -1
 
         await interaction.response.edit_message(view=None)
-        await interaction.delete_original_response()
+        await safe_delete_original_response(interaction)
         res = "キャンセル\n"
         # 新しいメッセージ送信
 
-        send = await interaction.channel.send(
+        send = await safe_channel_send(
+            interaction.channel,
             self.original_message.content,
             view=DCReprintView(self.boss_num),
             silent=True,
         )
         global dc_reprint
-        await dc_reprint[interaction.guild_id][self.boss_num - 1].delete()
+        await safe_message_delete(dc_reprint[interaction.guild_id][self.boss_num - 1])
         dc_reprint[interaction.guild_id][self.boss_num - 1] = send
         self.original_message = send
 
@@ -782,7 +889,7 @@ class DCReprintCancelConfirmView(discord.ui.View):
             res += (
                 interaction.guild.get_member(self.members[int(idx)][1]).mention + "\n"
             )
-        await interaction.channel.send(content=res)
+        await safe_channel_send(interaction.channel, content=res)
 
         members_list = []
         message_ids = []
@@ -822,9 +929,9 @@ class DCReprintCancelConfirmView(discord.ui.View):
                 pm = interaction.channel.get_partial_message(message_id)
                 c = prev_message.content(interaction.guild_id, message_id)
                 if c != None:
-                    await pm.edit(content=c)
+                    await safe_message_edit(pm, content=c)
                 else:
-                    await pm.delete()
+                    await safe_message_delete(pm)
             except:
                 continue
         ###############
@@ -834,8 +941,9 @@ class DCReprintCancelConfirmView(discord.ui.View):
         ).get_partial_message(
             db.read_guild("dc_msg", interaction.guild_id).split("\n")[self.boss_num - 1]
         )
-        await dc_message.edit(content=content)
-        await self.original_message.edit(content=content)
+        await safe_message_edit(dc_message, content=content)
+        await safe_message_edit(self.original_message, content=content)
+        from .dc import DC
         await DC.table_change(interaction.guild, self.boss_num, members_list, False)
         global prev_name
         for idx in self.selected:
@@ -858,13 +966,16 @@ class DCMochiSelectView(discord.ui.View):
         if isinstance(member_id, int):
             self.member_id = member_id
         else:
+            # members_list[0] が (No, id, status, damage) などの場合
             self.member_id = member_id[1]
-        if prev != None:
+
+        if prev is not None:
             self.prev = prev
         else:
             self.prev = db.read_member(guild_id, "mochi", self.member_id)
-            if self.prev == None:
+            if self.prev is None:
                 self.prev = 0
+
         super().__init__(timeout=240)
 
     async def update(self, guild: discord.Guild):
@@ -873,157 +984,156 @@ class DCMochiSelectView(discord.ui.View):
         ).get_partial_message(db.read_guild("reaction_msg", guild.id))
         await message.add_reaction("〰")
 
+    async def _handle_boss_mochi(
+        self,
+        interaction: discord.Interaction,
+        code_suffix: int,
+        message_text: str,
+    ):
+        # まずインタラクションを延命
+        await interaction.response.defer()
+
+        # mochiコードを書き込み
+        db.write_member(
+            interaction.guild_id,
+            self.member_id,
+            "mochi",
+            self.prev * 100 + code_suffix,
+        )
+
+        # リアクション更新
+        await self.update(interaction.guild)
+
+        # 元メッセージを書き換え（画面遷移）
+        await safe_edit_original_response(
+            interaction,
+            content=message_text,
+            view=DCMochiEditView(self.member_id, self.prev),
+        )
+
+    # 1ボス
     @discord.ui.button(label="1フル", style=discord.ButtonStyle.blurple, row=0)
     async def boss1full_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 31
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="１ボスフル持ち越し",
-            view=DCMochiEditView(self.member_id, self.prev),
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=31,
+            message_text="１ボスフル持ち越し",
         )
 
     @discord.ui.button(label="1長餅", style=discord.ButtonStyle.blurple, row=0)
     async def boss1long_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 11
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="１ボス長い持ち越し",
-            view=DCMochiEditView(self.member_id, self.prev),
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=11,
+            message_text="１ボス長い持ち越し",
         )
 
     @discord.ui.button(label="1小餅", style=discord.ButtonStyle.gray, row=0)
     async def boss1short_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 21
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="１ボス短い持ち越し",
-            view=DCMochiEditView(self.member_id, self.prev),
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=21,
+            message_text="１ボス短い持ち越し",
         )
 
+    # 2ボス
     @discord.ui.button(label="2フル", style=discord.ButtonStyle.blurple, row=1)
     async def boss2full_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 32
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="2ボスフル持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=32,
+            message_text="2ボスフル持ち越し",
         )
 
     @discord.ui.button(label="2長餅", style=discord.ButtonStyle.blurple, row=1)
     async def boss2long_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 12
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="2ボス長い持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=12,
+            message_text="2ボス長い持ち越し",
         )
 
     @discord.ui.button(label="2小餅", style=discord.ButtonStyle.gray, row=1)
     async def boss2short_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 22
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="2ボス短い持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=22,
+            message_text="2ボス短い持ち越し",
         )
 
+    # 3ボス
     @discord.ui.button(label="3フル", style=discord.ButtonStyle.blurple, row=2)
     async def boss3full_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 33
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="3ボスフル持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=33,
+            message_text="3ボスフル持ち越し",
         )
 
     @discord.ui.button(label="3長餅", style=discord.ButtonStyle.blurple, row=2)
     async def boss3long_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 13
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="3ボス長い持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=13,
+            message_text="3ボス長い持ち越し",
         )
 
     @discord.ui.button(label="3小餅", style=discord.ButtonStyle.gray, row=2)
     async def boss3short_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 23
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="3ボス短い持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=23,
+            message_text="3ボス短い持ち越し",
         )
 
+    # 4ボス
     @discord.ui.button(label="4フル", style=discord.ButtonStyle.blurple, row=3)
     async def boss4full_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 34
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="4ボスフル持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=34,
+            message_text="4ボスフル持ち越し",
         )
 
     @discord.ui.button(label="4長餅", style=discord.ButtonStyle.blurple, row=3)
     async def boss4long_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 14
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="4ボス長い持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=14,
+            message_text="4ボス長い持ち越し",
         )
 
     @discord.ui.button(label="4小餅", style=discord.ButtonStyle.gray, row=3)
     async def boss4short_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 24
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="4ボス短い持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=24,
+            message_text="4ボス短い持ち越し",
         )
 
+    # 5ボス
     @discord.ui.button(label="5フル", style=discord.ButtonStyle.blurple, row=4)
     async def boss5full_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 35
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="5ボスフル持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=35,
+            message_text="5ボスフル持ち越し",
         )
 
     @discord.ui.button(label="5長餅", style=discord.ButtonStyle.blurple, row=4)
     async def boss5long_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 15
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="5ボス長い持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=15,
+            message_text="5ボス長い持ち越し",
         )
 
     @discord.ui.button(label="5小餅", style=discord.ButtonStyle.gray, row=4)
     async def boss5short_button(self, interaction: discord.Interaction, button):
-        db.write_member(
-            interaction.guild_id, self.member_id, "mochi", self.prev * 100 + 25
-        )
-        await self.update(interaction.guild)
-        await interaction.response.edit_message(
-            content="5ボス短い持ち越し", view=DCMochiEditView(self.member_id, self.prev)
+        await self._handle_boss_mochi(
+            interaction,
+            code_suffix=25,
+            message_text="5ボス短い持ち越し",
         )
 
 
@@ -1049,7 +1159,7 @@ class KaihouConfirmView(discord.ui.View):
     @discord.ui.button(label="OK", style=discord.ButtonStyle.green)
     async def ok_button(self, interaction: discord.Interaction, button):
         await interaction.response.edit_message(view=None)
-        await interaction.delete_original_response()
+        await safe_delete_original_response(interaction)
         """
         mentions_id=db.execute(f"SELECT id FROM dc_{interaction.guild_id} WHERE boss = {self.boss_num} AND done <> 1")
         mentions=""
@@ -1059,7 +1169,7 @@ class KaihouConfirmView(discord.ui.View):
         if interaction.guild_id == 0:
             text=mentions + f"\n{self.boss_num}ボス開放"
 
-        await interaction.channel.send(text)
+        await safe_channel_send(interaction.channel, text)
         """
 
         def get_sticker(guild: discord.Guild, id: int):
@@ -1071,24 +1181,29 @@ class KaihouConfirmView(discord.ui.View):
         if interaction.guild_id == 1276184060791750656:
             match self.boss_num:
                 case 1:
-                    await interaction.channel.send(
-                        stickers=get_sticker(interaction.guild, 1343949879013281802)
+                    await safe_channel_send(
+                        interaction.channel,
+                        stickers=get_sticker(interaction.guild, 1343949879013281802),
                     )
                 case 2:
-                    await interaction.channel.send(
-                        stickers=get_sticker(interaction.guild, 1354476245290586223)
+                    await safe_channel_send(
+                        interaction.channel,
+                        stickers=get_sticker(interaction.guild, 1354476245290586223),
                     )
                 case 3:
-                    await interaction.channel.send(
-                        stickers=get_sticker(interaction.guild, 1343950149029859339)
+                    await safe_channel_send(
+                        interaction.channel,
+                        stickers=get_sticker(interaction.guild, 1343950149029859339),
                     )
                 case 4:
-                    await interaction.channel.send(
-                        stickers=get_sticker(interaction.guild, 1343950198967111843)
+                    await safe_channel_send(
+                        interaction.channel,
+                        stickers=get_sticker(interaction.guild, 1343950198967111843),
                     )
                 case 5:
-                    await interaction.channel.send(
-                        stickers=get_sticker(interaction.guild, 1343950249546350673)
+                    await safe_channel_send(
+                        interaction.channel,
+                        stickers=get_sticker(interaction.guild, 1343950249546350673),
                     )
             await asyncio.sleep(0.5)
 
@@ -1110,7 +1225,7 @@ class KaihouConfirmView(discord.ui.View):
         fetch_message = await message.fetch()
         fetch_content = fetch_message.content
         content = Generator.dc_content(interaction.guild, self.boss_num)
-        await fetch_message.edit(content=content)
+        await safe_message_edit(fetch_message, content=content)
 
         await message.clear_reactions()
         await message.add_reaction("🔄")
