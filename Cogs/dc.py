@@ -280,10 +280,10 @@ class DCReprintDCMessageView(discord.ui.View):
         if interaction.guild_id ==1276184060791750656:
             channel=interaction.guild.get_channel(1293579100056846409)
         else:
-            channel=interaction.guild.get_channel(927488075716759562)
+            channel=interaction.guild.get_channel(1524979826761535498)
         dc_messages=db.read_guild("dc_msg",interaction.guild_id).split("\n")
         boss_num=dc_messages.index(str(interaction.message.id))+1
-        await interaction.response.send_message(content=f"{channel.mention}に転送ますか",ephemeral=True,view=DCReprintDCMessageConfirmView(channel,boss_num))
+        await interaction.response.send_message(content=f"{channel.mention}に転送しますか",ephemeral=True,view=DCReprintDCMessageConfirmView(channel,boss_num))
     @discord.ui.button(label="サブ転送",style=discord.ButtonStyle.gray,custom_id="sub_reprint")
     async def sub_button(self,interaction:discord.Interaction,button):
         if interaction.guild_id ==1276184060791750656:
@@ -292,16 +292,16 @@ class DCReprintDCMessageView(discord.ui.View):
             channel=interaction.guild.get_channel(864795442742427648)
         dc_messages=db.read_guild("dc_msg",interaction.guild_id).split("\n")
         boss_num=dc_messages.index(str(interaction.message.id))+1
-        await interaction.response.send_message(content=f"{channel.mention}に転送ますか",ephemeral=True,view=DCReprintDCMessageConfirmView(channel,boss_num))
+        await interaction.response.send_message(content=f"{channel.mention}に転送しますか",ephemeral=True,view=DCReprintDCMessageConfirmView(channel,boss_num))
     @discord.ui.button(label="単騎転送",style=discord.ButtonStyle.gray,custom_id="t_reprint")
     async def t_button(self,interaction:discord.Interaction,button):
         if interaction.guild_id ==1276184060791750656:
             channel=interaction.guild.get_channel(1293579743681319023)
         else:
-            channel=interaction.guild.get_channel(808238342239813642)
+            channel=interaction.guild.get_channel(1524979951928086539)
         dc_messages=db.read_guild("dc_msg",interaction.guild_id).split("\n")
         boss_num=dc_messages.index(str(interaction.message.id))+1
-        await interaction.response.send_message(content=f"{channel.mention}に転送ますか",ephemeral=True,view=DCReprintDCMessageConfirmView(channel,boss_num))
+        await interaction.response.send_message(content=f"{channel.mention}に転送しますか",ephemeral=True,view=DCReprintDCMessageConfirmView(channel,boss_num))
 
 
 reprinttimer=[datetime.now(),datetime.now(),datetime.now(),datetime.now(),datetime.now()]
@@ -807,7 +807,7 @@ class KaihouConfirmView(discord.ui.View):
 
         await message.clear_reactions()
         await message.add_reaction("🔄")
-        await message.add_reaction(discord.PartialEmoji.from_str("<:syu:1271379304919465995> "))
+        await message.add_reaction(discord.PartialEmoji.from_str("<:syu:1525129140867563571> "))
         await message.add_reaction("🔼")
         await message.add_reaction("🔻")
         await message.add_reaction("🔥")
@@ -980,7 +980,7 @@ class DC(commands.Cog):
         self.bot.add_view(SuspendView())
         self.bot.add_view(DCReprintDCMessageView())
         self.DC_timer={}
-        self.syudou=discord.PartialEmoji.from_str("<:syu:1271379304919465995> ")
+        self.syudou=discord.PartialEmoji.from_str("<:syu:1525129140867563571> ")
     
     
     async def dc_unknown(self,guild_id):
@@ -1720,7 +1720,8 @@ class DC(commands.Cog):
             await dc_reprint[message.guild.id][boss-1].edit(content=content)
             await DC.table_change(message.guild,boss,members_list,False)
             prev_message.delete(message.guild.id,message.id)
-            await message.channel.send(f"キャンセル\n{'\n'.join(['<@'+str(m[1])+'>' for m in members_list])}")
+            mentions = "\n".join([f"<@{m[1]}>" for m in members_list])
+            await message.channel.send(f"キャンセル\n{mentions}")
             # 名前の変更
             global prev_name
             for member in members_list:

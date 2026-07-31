@@ -1,3 +1,5 @@
+import os
+import sys
 import asyncio
 from io import BytesIO
 import subprocess
@@ -181,7 +183,9 @@ class Roulette(commands.Cog):
         try:
             async with ctx.channel.typing():
                 if len(args)>5:
-                    cmd=["python","roulette_sub.py"]+list(args)
+                    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    sub_path = os.path.join(BASE_DIR, "util", "roulette_sub.py")
+                    cmd = [sys.executable, sub_path] + list(args)
                     result=subprocess.run(cmd,stdout=subprocess.PIPE)
                     filename=result.stdout.decode("utf-8").split()[0]
                     res=re.match(r".+\.gif",filename).group()

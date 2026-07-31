@@ -648,7 +648,7 @@ class RecruitAtSameTimeConfirmView(discord.ui.LayoutView):
         if interaction.guild_id ==1276184060791750656:
             channel=interaction.guild.get_channel(1293579100056846409)
         else:
-            channel=interaction.guild.get_channel(927488075716759562)
+            channel=interaction.guild.get_channel(1524979826761535498)
         send = await channel.send(view=RecruitMessageLayoutView(self.boss1,self.members_name1))
         await interaction.delete_original_response()
         await forward_message.Forward(channel,self.boss1-1)
@@ -657,7 +657,7 @@ class RecruitAtSameTimeConfirmView(discord.ui.LayoutView):
         if interaction.guild_id ==1276184060791750656:
             channel=interaction.guild.get_channel(1335059739410698344)
         else:
-            channel=interaction.guild.get_channel(864795442742427648)
+            channel=interaction.guild.get_channel(1524979843194818702)
         send = await channel.send(view=RecruitMessageLayoutView(self.boss2,self.members_name2))
         await forward_message.Forward(channel,self.boss2-1)
         raiserhand_counter.Start(send,self.members_name2)
@@ -669,7 +669,7 @@ class RecruitAtSameTimeConfirmView(discord.ui.LayoutView):
         if interaction.guild_id ==1276184060791750656:
             channel=interaction.guild.get_channel(1293579100056846409)
         else:
-            channel=interaction.guild.get_channel(927488075716759562)
+            channel=interaction.guild.get_channel(1524979826761535498)
         send = await channel.send(view=RecruitMessageLayoutView(self.boss2,self.members_name2))
         await interaction.delete_original_response()
         await forward_message.Forward(channel,self.boss2-1)
@@ -678,7 +678,7 @@ class RecruitAtSameTimeConfirmView(discord.ui.LayoutView):
         if interaction.guild_id ==1276184060791750656:
             channel=interaction.guild.get_channel(1335059739410698344)
         else:
-            channel=interaction.guild.get_channel(864795442742427648)
+            channel=interaction.guild.get_channel(1524979843194818702)
         send = await channel.send(view=RecruitMessageLayoutView(self.boss1,self.members_name1))
         await forward_message.Forward(channel,self.boss1-1)
         raiserhand_counter.Start(send,self.members_name1)
