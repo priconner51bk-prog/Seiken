@@ -579,7 +579,19 @@ class RecruitMemberButton(discord.ui.Button):
         self.boss_num = boss_num
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            debug_write(
+                f"RecruitMemberButton.defer expired guild={interaction.guild_id} boss={self.boss_num}"
+            )
+            return
+        except Exception as e:
+            debug_write(
+                f"RecruitMemberButton.defer failed guild={interaction.guild_id} boss={self.boss_num} error={e!r}"
+            )
+            return
 
         members = db.execute(
             f"SELECT id FROM member_{interaction.guild_id} "
