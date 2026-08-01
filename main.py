@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from util.emoji_util import EmojiUtil
 from util.path import dir_path
 
 load_dotenv()
@@ -17,6 +18,7 @@ intents.message_content = True
 isLoaded = False
 
 bot = commands.Bot(command_prefix="/", intents=intents)
+EmojiUtil.setup(bot)
 
 
 @bot.event
@@ -44,9 +46,11 @@ async def on_ready():
                 print(f"[NG] failed: {ext_name}")
                 print(f"     reason: {type(e).__name__}: {e}")
 
-
         print("[LOAD] loaded cogs:", list(bot.cogs.keys()))
-        print("[TREE] local commands before sync:", [cmd.name for cmd in bot.tree.get_commands()])
+        print(
+            "[TREE] local commands before sync:",
+            [cmd.name for cmd in bot.tree.get_commands()],
+        )
 
         try:
             # synced = await bot.tree.sync(guild=discord.Object(id=1360448049272328333))
