@@ -7,7 +7,6 @@ import re
 import warnings
 from datetime import datetime, timedelta
 from io import BytesIO
-from pathlib import Path
 
 import discord
 import emoji
@@ -15,10 +14,8 @@ import matplotlib
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import pandas as pd
-from cv2 import add
-from discord import app_commands, reaction
+from discord import app_commands
 from discord.ext import commands
-from proto import Message
 
 from util.content_generator import Generator
 from util.database import db
@@ -121,9 +118,8 @@ class ForwardMessageUtil:
     async def Forward(self, channel: discord.TextChannel, boss):
         if (
             channel.guild.id not in self.messages
-            or self.messages[channel.guild.id][boss] is None
+            or self.messages[channel.guild.id][boss] == None
         ):
-            debug_write("Forward: source message not found")
             return
 
         source_message = self.messages[channel.guild.id][boss]
@@ -579,53 +575,35 @@ class RecruitMemberButton(discord.ui.Button):
         self.boss_num = boss_num
 
     async def callback(self, interaction: discord.Interaction):
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            debug_write(
-                f"RecruitMemberButton.defer expired guild={interaction.guild_id} boss={self.boss_num}"
-            )
-            return
-        except Exception as e:
-            debug_write(
-                f"RecruitMemberButton.defer failed guild={interaction.guild_id} boss={self.boss_num} error={e!r}"
-            )
-            return
-
         members = db.execute(
-            f"SELECT id FROM member_{interaction.guild_id} "
-            f"WHERE boss{self.boss_num} IS NOT NULL AND AFK IS NULL"
+            f"SELECT id FROM member_{interaction.guild_id} WHERE boss{self.boss_num} IS NOT NULL AND AFK IS NULL"
         )
         members = list(itertools.chain.from_iterable(members))
-
         mochi = db.execute(
-            f"SELECT id,mochi FROM member_{interaction.guild_id} "
-            f"WHERE mochi > 0 AND AFK IS NULL"
+            f"SELECT id,mochi FROM member_{interaction.guild_id} WHERE mochi > 0 AND AFK IS NULL"
         )
         for m in mochi:
             if str(self.boss_num) in [
                 str(m[1])[i + 1] for i in range(0, len(str(m[1])), 2)
             ]:
                 members.append(m[0])
-
         if len(members) == 0:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 f"{self.boss_num}ボスのメンバーはいません", ephemeral=True
             )
-        elif reservation.contain(interaction.guild_id, self.boss_num):
-            await interaction.followup.send(
-                view=RecruitAtSameTimeView(interaction.guild, self.boss_num),
-                ephemeral=True,
-            )
         else:
-            members_name = [
-                interaction.guild.get_member(m).mention for m in set(members)
-            ]
-            await interaction.followup.send(
-                ephemeral=True,
-                view=RecruitConfirmView(self.boss_num, members_name),
-            )
+            if reservation.contain(interaction.guild_id, self.boss_num):
+                await interaction.response.send_message(
+                    view=RecruitAtSameTimeView(interaction.guild, self.boss_num),
+                    ephemeral=True,
+                )
+            else:
+                members_name = [
+                    interaction.guild.get_member(m).mention for m in set(members)
+                ]
+                await interaction.response.send_message(
+                    ephemeral=True, view=RecruitConfirmView(self.boss_num, members_name)
+                )
 
 
 class RecruitConfirmView(discord.ui.LayoutView):
