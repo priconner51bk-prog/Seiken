@@ -35,7 +35,12 @@ async def on_ready():
         for f in os.listdir(dir_path + "/Cogs"):
             if not f.endswith(".py"):
                 continue
-            if f == "__init__.py" or f.endswith("_views.py") or f.endswith("_state.py"):
+            if (
+                f == "__init__.py"
+                or f.endswith("_views.py")
+                or f.endswith("_state.py")
+                or f.endswith("_utils.py")
+            ):
                 continue
 
             ext_name = "Cogs." + f[:-3]
