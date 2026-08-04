@@ -146,12 +146,20 @@ class RecruitMemberButton(discord.ui.Button):
         self.boss_num = boss_num
 
     async def callback(self, interaction: discord.Interaction):
-        members = db.execute(
-            f"SELECT id FROM member_{interaction.guild_id} WHERE boss{self.boss_num} IS NOT NULL AND AFK IS NULL"
+        # 1) 最初にdeferしてDiscordへの応答期限(3秒)を確保する
+        #    この後のDB処理がどれだけ遅くても
+        #    タイムアウト(応答なし)にならないようにするための対策
+        await interaction.response.defer(ephemeral=True)
+
+        # 2) 同期SQLite処理をスレッドに逃がしてイベントループをブロックしない
+        members = await asyncio.to_thread(
+            db.execute,
+            f"SELECT id FROM member_{interaction.guild_id} WHERE boss{self.boss_num} IS NOT NULL AND AFK IS NULL",
         )
         members = list(itertools.chain.from_iterable(members))
-        mochi = db.execute(
-            f"SELECT id,mochi FROM member_{interaction.guild_id} WHERE mochi > 0 AND AFK IS NULL"
+        mochi = await asyncio.to_thread(
+            db.execute,
+            f"SELECT id,mochi FROM member_{interaction.guild_id} WHERE mochi > 0 AND AFK IS NULL",
         )
         for m in mochi:
             if str(self.boss_num) in [
@@ -159,12 +167,13 @@ class RecruitMemberButton(discord.ui.Button):
             ]:
                 members.append(m[0])
         if len(members) == 0:
-            await interaction.response.send_message(
+            # 3) defer済みなのでresponseではなくfollowupで最終応答を送る
+            await interaction.followup.send(
                 f"{self.boss_num}ボスのメンバーはいません", ephemeral=True
             )
         else:
             if reservation.contain(interaction.guild_id, self.boss_num):
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     view=RecruitAtSameTimeView(interaction.guild, self.boss_num),
                     ephemeral=True,
                 )
@@ -172,7 +181,7 @@ class RecruitMemberButton(discord.ui.Button):
                 members_name = [
                     interaction.guild.get_member(m).mention for m in set(members)
                 ]
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     ephemeral=True, view=RecruitConfirmView(self.boss_num, members_name)
                 )
 

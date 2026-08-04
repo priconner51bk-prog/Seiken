@@ -213,28 +213,33 @@ class Table(commands.Cog):
     async def totsu_change_context(
         self, interaction: discord.Interaction, member: discord.Member
     ):
+        await interaction.response.defer(ephemeral=True)
         roles = [
             interaction.guild.get_role(808240600691900417),
             interaction.guild.get_role(1292855894454964336),
             interaction.guild.get_role(1335210159735177297),
         ]
-        if db.read_member(member.guild.id, "id", member.id) == None:
-            await interaction.response.send_message(
-                "メンバーではありません", ephemeral=True
-            )
+        is_member = await asyncio.to_thread(
+            db.read_member, member.guild.id, "id", member.id
+        )
+        if is_member == None:
+            await interaction.edit_original_response(content="メンバーではありません")
         elif not (
             set(roles) & set(interaction.user.roles) or interaction.user.id == member.id
         ):
-            await interaction.response.send_message(
-                "自分以外の凸希望は変更できません", ephemeral=True
+            await interaction.edit_original_response(
+                content="自分以外の凸希望は変更できません"
             )
         else:
-            totsu = db.execute(
-                f"SELECT boss1,boss2,boss3,boss4,boss5,mochi FROM member_{member.guild.id} WHERE id = {member.id}"
+            totsu = (
+                await asyncio.to_thread(
+                    db.execute,
+                    f"SELECT boss1,boss2,boss3,boss4,boss5,mochi FROM member_{member.guild.id} WHERE id = {member.id}",
+                )
             )[0]
             content = "１列目　本凸\n２列目　フル持ち越し\n３列目　長い持ち越し\n４列目以降　短い持ち越し"
-            await interaction.response.send_message(
-                content, ephemeral=True, view=TotsuChangeView(member.id, totsu)
+            await interaction.edit_original_response(
+                content=content, view=TotsuChangeView(member.id, totsu)
             )
 
     @commands.Cog.listener("on_message")
@@ -287,7 +292,7 @@ class Table(commands.Cog):
     @app_commands.guild_only()
     async def img_slash(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        result = self.CreateTable(interaction.guild_id)
+        result = await asyncio.to_thread(self.CreateTable, interaction.guild_id)
         await interaction.delete_original_response()
         if result != None:
             send = await interaction.channel.send(file=result, view=RecruitMemberView())
@@ -298,13 +303,14 @@ class Table(commands.Cog):
     @app_commands.command(name="simg", description="シークレットな凸希望表の表示")
     @app_commands.guild_only()
     async def simg_slash(self, interaction: discord.Interaction):
-        result = self.CreateTable(interaction.guild_id)
+        await interaction.response.defer(ephemeral=True)
+        result = await asyncio.to_thread(self.CreateTable, interaction.guild_id)
         if result != None:
-            await interaction.response.send_message(
-                file=result, ephemeral=True, view=RecruitMemberView()
+            await interaction.edit_original_response(
+                attachments=[result], view=RecruitMemberView()
             )
         else:
-            await interaction.response.send_message("🤔", ephemeral=True)
+            await interaction.edit_original_response(content="🤔")
 
     async def img_fixed_load(self):
         imgfixed_ids = db.execute(
@@ -481,25 +487,39 @@ class Table(commands.Cog):
         self, interaction: discord.Interaction, member: discord.Member
     ):
         await interaction.response.defer(ephemeral=True)
-        if db.read_member(member.guild.id, "id", member.id) != None:
-            if db.read_member(interaction.guild_id, "finish", member.id) == None:
+        is_member = await asyncio.to_thread(
+            db.read_member, member.guild.id, "id", member.id
+        )
+        if is_member != None:
+            is_finished = await asyncio.to_thread(
+                db.read_member, interaction.guild_id, "finish", member.id
+            )
+            if is_finished == None:
                 await self.member_reset(member)
                 await self.delete_mochikoshi(member.guild.id, member.id)
-                db.write_member(interaction.guild_id, member.id, "finish", 0)
+                await asyncio.to_thread(
+                    db.write_member, interaction.guild_id, member.id, "finish", 0
+                )
                 await interaction.edit_original_response(
                     content=f"{member.display_name}を完了にしました"
                 )
             else:
-                db.delete_member(interaction.guild_id, member.id, "finish")
+                await asyncio.to_thread(
+                    db.delete_member, interaction.guild_id, member.id, "finish"
+                )
                 await interaction.edit_original_response(
                     content=f"{member.display_name}を未完了にしました"
                 )
             try:
-                totsu_message = interaction.guild.get_channel(
-                    db.read_guild("totsukanri_ch", interaction.guild_id)
-                ).get_partial_message(
-                    db.read_guild("totsukanri_msg", interaction.guild_id)
+                totsu_kanri_ch = await asyncio.to_thread(
+                    db.read_guild, "totsukanri_ch", interaction.guild_id
                 )
+                totsu_kanri_msg = await asyncio.to_thread(
+                    db.read_guild, "totsukanri_msg", interaction.guild_id
+                )
+                totsu_message = interaction.guild.get_channel(
+                    totsu_kanri_ch
+                ).get_partial_message(totsu_kanri_msg)
                 await totsu_message.edit(
                     embed=discord.Embed(
                         color=discord.colour.parse_hex_number("ffffff"),
@@ -520,7 +540,10 @@ class Table(commands.Cog):
         self, interaction: discord.Interaction, member: discord.Member
     ):
         await interaction.response.defer(ephemeral=True)
-        if db.read_member(member.guild.id, "id", member.id) != None:
+        is_member = await asyncio.to_thread(
+            db.read_member, member.guild.id, "id", member.id
+        )
+        if is_member != None:
             await self.member_reset(member)
             await interaction.edit_original_response(
                 content=f"{member.display_name}のリアクションをリセットしました"
